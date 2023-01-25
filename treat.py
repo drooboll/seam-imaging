@@ -3,8 +3,9 @@ from scipy import ndimage
 import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
+import math
 
-image = Image.open('banc-1.jpg').convert('L')
+image = Image.open('plage.jpg').convert('L')
 
 grad_x = ndimage.sobel(image, axis=0, mode='constant')
 grad_y = ndimage.sobel(image, axis=1, mode='constant')
@@ -26,7 +27,7 @@ G.add_node(source_index)
 # Sink
 G.add_node(dest_index)
 
-back_weight = 10000
+back_weight = np.sum(grad_l1)
 
 for width in range(1, image.width - 1, 1):
     print(f"Width {width} out of {image.width}")
@@ -38,12 +39,29 @@ for width in range(1, image.width - 1, 1):
             G.add_edge(height * image.width + width + 1, (height + 1) * image.width + width, capacity=back_weight)
             G.add_edge((height + 1) * image.width + width + 1, height * image.width + width, capacity=back_weight)
 
-max = np.max(grad_l1) * np.e
-
 # connect first column
 for height in range(image.height):
-    G.add_edge(source_index, height * width, weight=max)
+    G.add_edge(source_index, height * width, capacity=back_weight)
 
 #connect last column
 for height in range(image.height):
-    G.add_edge((height + 1) * width, dest_index, weight=max)
+    G.add_edge((height + 1) * width, dest_index, capacity=back_weight)
+
+
+cut_value, partition = nx.minimum_cut(G, source_index, dest_index, capacity='capacity')
+
+# border calculation
+edge_nodes = []
+for p1_node in partition[0]:
+    for p2_node in partition[1]:
+        if G.has_edge(p1_node, p2_node):
+            # taking left part
+            edge_nodes.append(p1_node)
+
+print(edge_nodes)
+
+for node in edge_nodes:
+    x = node % image.width
+    y = math.floor(node / image.width)
+    print(x, y)
+    image.putpixel((x, y), (255))
