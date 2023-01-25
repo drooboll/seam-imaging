@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import math
 
-image = Image.open('plage.jpg').convert('L')
+image = Image.open('banc-1.jpg').convert('L')
 
 grad_x = ndimage.sobel(image, axis=0, mode='constant')
 grad_y = ndimage.sobel(image, axis=1, mode='constant')
@@ -20,6 +20,8 @@ for width in range(image.width):
     for height in range(image.height):
         G.add_node(height * image.width + width, pos=(width, height))
 
+print(len(G.edges), len(G.nodes), image.width * image.height)
+
 source_index = image.width * image.height + 1
 dest_index = image.width * image.height + 2
 # Source 
@@ -29,24 +31,25 @@ G.add_node(dest_index)
 
 back_weight = np.sum(grad_l1)
 
-for width in range(1, image.width - 1, 1):
+for width in range(image.width - 1):
     print(f"Width {width} out of {image.width}")
     for height in range(image.height):
         G.add_edge(height * image.width + width, height * image.width + width + 1, capacity=grad_l1[height][width])
         G.add_edge(height * image.width + width + 1, height * image.width + width, capacity=back_weight)
 
-        if height % 2 == 0 and height != image.height:
+        if height % 2 == 0 and height != image.height - 1:
             G.add_edge(height * image.width + width + 1, (height + 1) * image.width + width, capacity=back_weight)
             G.add_edge((height + 1) * image.width + width + 1, height * image.width + width, capacity=back_weight)
 
+print(len(G.edges), len(G.nodes), image.width * image.height)
+
 # connect first column
 for height in range(image.height):
-    G.add_edge(source_index, height * width, capacity=back_weight)
+    G.add_edge(source_index, height * image.width, capacity=back_weight)
 
 #connect last column
 for height in range(image.height):
-    G.add_edge((height + 1) * width, dest_index, capacity=back_weight)
-
+    G.add_edge(height * image.width + image.width - 1, dest_index, capacity=back_weight)
 
 cut_value, partition = nx.minimum_cut(G, source_index, dest_index, capacity='capacity')
 
@@ -65,3 +68,6 @@ for node in edge_nodes:
     y = math.floor(node / image.width)
     print(x, y)
     image.putpixel((x, y), (255))
+
+image.save("test-out.jpg")
+
