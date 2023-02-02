@@ -1,25 +1,60 @@
 from PIL import Image
+from skimage import img_as_float
+from skimage.segmentation import chan_vese
 from scipy import ndimage
 import numpy as np
 import graph_tool.all as gt
-import graph_tool.draw as gt_draw
-from datetime import datetime, timedelta
+from datetime import datetime
+from fractions import Fraction
 import math
-import logging
+import sys
 
-logging.basicConfig(
-    format='%(asctime)s %(levelname)-8s %(message)s',
-    level=logging.INFO,
-    datefmt='%Y-%m-%d %H:%M:%S')
+import matplotlib.pyplot as plt
+
+# Part of contour-based energy
+alpha = 0.5
+
+# Chan-Vese parameters
+mu = 0.016
+lambda1 = 1.25
+lambda2 = 0.75
+tolerance=2e-3
+
 
 def get_node_index(image, x, y):
     return y * image.width + x
+
 
 def get_gradient_image(image):
     grad_x = ndimage.sobel(image, axis=0, mode='constant')
     grad_y = ndimage.sobel(image, axis=1, mode='constant')
 
+
     return np.abs(grad_x) + np.abs(grad_y)
+
+
+def get_contour_image(image):
+    image_flt = img_as_float(image)
+
+    # seems logical for me, since homogenous clusters normally should be with small gradient -> same segment
+    init = get_gradient_image(image) / 2000
+
+    # parameters are set to work ok with "plage" and "ouiseau"
+    segmentation, _, en = chan_vese(image_flt, mu=mu, lambda1=lambda1, lambda2=lambda2, tol=tolerance,
+               max_num_iter=100, dt=0.5, init_level_set=init,
+               extended_output=True)
+
+    # it's called cheating
+    # in fact the problem is caused by low-contrast images,
+    # and algo sometimes swap object and background,
+    # so we have to invert it...
+    if np.sum(segmentation) > 0.5 * image.width * image.height:
+        segmentation = 1 - segmentation
+
+    segmentation = (get_gradient_image(segmentation) > 0)
+
+    return Image.fromarray((segmentation * 255).astype(np.uint8))
+
 
 def build_graph(image):
     print(datetime.now(), "Size:", image.width, image.height)
@@ -28,6 +63,7 @@ def build_graph(image):
     G.add_vertex(image.width * image.height + 2)
 
     return G
+
 
 def graph_add_weights(G, grad_l1):
     back_weight = np.sum(grad_l1)
@@ -124,30 +160,6 @@ def graph_get_border(G):
 
     print(datetime.now(), "min cut calc finished")
     # border calculation
-
-    cap = G.edge_properties["weight"]
-
-    """
-    res.a = cap.a - res.a 
-    edge_pen_width=gt.prop_to_size(res, mi=1, ma=5, power=0.5)
-    pos = G.new_vertex_property("vector<double>")
-    vprop = {}
-
-    for v in G.vertices():
-        if G.vertex_index[v] == image.width * image.height:
-            pos[v] = (0, 10*image.height / 2)
-            continue
-        if G.vertex_index[v] == image.width * image.height + 1:
-            pos[v] = (10*image.width + 20, 10*image.height / 2)
-            continue
-        pos[v] = (G.vertex_index[v] % image.width*10 + 10, 10*math.floor(G.vertex_index[v] / image.width))
-        vprop[v] = f"{G.vertex_index}"
-
-    G.vertex_properties["pos"] = pos
-
-    gt_draw.graphviz_draw(G, pos=pos, vprops=vprop, pin=True, output="test.png", size=(40,40), vsize=4, penwidth=edge_pen_width, vcolor=partition)
-    """
-
     left = []
     border = []
 
@@ -184,13 +196,17 @@ def graph_get_border(G):
 
     return [x % image.width for x in border]
 
-def cut_image_x(image):
-    image = image.convert('L')
+def cut_image_x(image, contour):
     out_image = Image.new("L", (image.width - 1, image.height))
+    new_contour = Image.new("L", (image.width - 1, image.height))
     print(datetime.now(), "Graph build")
     G = build_graph(image)
     grad = get_gradient_image(image)
-    G = graph_add_weights(G, grad)
+
+    
+    energies = alpha * np.array(contour) + (1 - alpha) * grad
+    
+    G = graph_add_weights(G, energies)
     print(datetime.now(), "Graph build end")
     border = graph_get_border(G)
 
@@ -201,19 +217,72 @@ def cut_image_x(image):
 
             dest_height = height
             dest_width = width if width < border[height] else width - 1
-            #print(datetime.now(), out_image.width, out_image.height, dest_width, dest_height)
             out_image.putpixel((dest_width, dest_height), image.getpixel((width, height)))
+            new_contour.putpixel((dest_width, dest_height), contour.getpixel((width, height)))
     
-    return out_image
+    return out_image, new_contour
 
+# Parameters
+# 1 - name of the image to crop
+# 2 - crop on aX in pixels
+# 3 - crop on aY in pixels
 
-image = Image.open('banc.jpg')
+if __name__ == '__main__':
+    filename = sys.argv[1]
+    steps_x = int(sys.argv[2])
+    steps_y = int(sys.argv[3])
 
-start_time = datetime.now()
-for i in range(50):
-    image = cut_image_x(image)
-    image.save(f"out/processing-{i}.jpg")
+    image = Image.open(filename).convert('L')
+    contour = get_contour_image(image)
 
-print(datetime.now(), "--- %s seconds ---" % (datetime.now() - start_time))
+    plt.imshow(contour)
+    plt.show()
 
-image.save("test-out.jpg")
+    print(f"Cropping {filename} to {image.width - steps_x}x{image.height - steps_y}")
+
+    start_time = datetime.now()
+    operations = []
+
+    # Here goes a bit weird step sequence.
+    # The idea is to do as much interleaves of x and y axis seaming
+
+    if steps_y == 0:
+        if steps_x == 0:
+            exit(0)
+        operations = 'x' * steps_x
+
+    elif steps_x == 0:
+        operations = 'y' * steps_y
+    
+    else:
+        # Not the best approach, but it should work
+        # in fact it is better to do xyxyxy... 
+        frac = Fraction(round(steps_x / steps_y, 1)).limit_denominator()
+        x_series = math.floor(steps_x / frac.numerator)
+        x_left = steps_x - x_series * frac.numerator
+        y_series = math.floor(steps_y / frac.denominator)
+        y_left = steps_y - x_series * frac.denominator
+        operations = ('x' * frac.numerator + 'y' * frac.denominator) * x_series
+        operations += 'x' * x_left + 'y' * y_left
+
+        print(f"Steps x:{ frac.numerator}, steps y: {frac.denominator}, series: {x_series}, {y_series}")
+        print(f"Steps left: {x_left}, {y_left}")
+        print(operations)
+
+    count = 0
+    for op in operations:
+        # TODO: do not need to rotate for consecutive 'y'-s actually
+        if op == 'y':
+            image = image.rotate(90, expand=True)
+            contour = contour.rotate(90, expand=True)
+        image, contour = cut_image_x(image, contour)
+        if op == 'y':
+            image = image.rotate(270, expand=True)
+            contour = contour.rotate(270, expand=True)
+        count += 1
+        image.save(f"out/processing-{count}.jpg")
+        contour.save(f"out/contour-{count}.jpg")
+
+    print(datetime.now(), "--- %s seconds ---" % (datetime.now() - start_time))
+
+    image.save("test-out.jpg")
